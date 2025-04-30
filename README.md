@@ -21,6 +21,18 @@ The DeepTumour algorithm predicts the tissue of origin of a tumour based on the 
     docker run --rm -a stdout -a stderr -v .:/WORKDIR ghcr.io/lincolnsteinlab/deeptumour:latest [OPTIONS] --stdout > [OUTPUT_JSON]
     ```
 
+### Singularity
+
+1. Study the command options:
+    ```sh
+    singularity run docker://ghcr.io/lincolnsteinlab/deeptumour:lastest --help
+    ```
+
+2. Run DeepTumour _([bind paths if needed](https://docs.sylabs.io/guides/3.0/user-guide/bind_paths_and_mounts.html#system-defined-bind-paths))_:
+    ```sh
+    singularity run docker://ghcr.io/lincolnsteinlab/deeptumour:latest [OPTIONS]
+    ```
+
 
 ### Local Environment
 
