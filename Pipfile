@@ -4,14 +4,17 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
-biopython = "*"
-click = "*"
-liftover = "*"
-pandas = "*"
-pyfaidx = "*"
-scikit-allel = "*"
+biopython = "==1.78"
+click = "==7.1.2"
+liftover = "==1.3.1"
+numpy = "==1.22.4"
+pandas = "==1.3.5"
+pyfaidx = "==0.7.2.2"
+scikit-allel = "==1.3.6"
+torch = "==1.12.1"
+tqdm = "==4.66.5"
 
 [dev-packages]
 
 [requires]
-python_version = "3.13"
+python_version = "3.10.6"
