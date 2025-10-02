@@ -19,39 +19,76 @@ def hg38tohg19(vcf:pd.DataFrame, fasta:Fasta) -> pd.DataFrame:
     Convert hg38 coordinates to hg19
     """
 
-    converter = ChainFile(REPO_ROOT / 'requirements/hg38ToHg19.over.chain.gz')
-    for i,row in vcf.iterrows():
-        chrom:str = str(row['CHROM'])
-        pos:int = int(row['POS'])
-        vcf_REF = row['REF']
-        vcf_ALT = row['ALT']
+    converter = ChainFile(REPO_ROOT / 'requirements/hg38ToHg19.over.chain.gz', one_based=True)
+    for i, row in vcf.iterrows():
+        chrom: str = str(row['CHROM'])
+        pos: int = int(row['POS'])  # 1-based position
+        vcf_REF: str = row['REF']
+        vcf_ALT: str = row['ALT']
+
+        # Only process SNPs and MNPs, discard indels
+        if len(vcf_REF) != len(vcf_ALT):
+            vcf.at[i, 'CHROM'] = 'Remove'
+            continue
         
-        try:
-            lift_chr, lift_pos, lift_strand = converter[chrom][pos][0]
-        except IndexError:
+        # Try different chromosome name formats, get matching targets
+        for chr in [chrom, chrom.replace('chr', ''), f'chr{chrom}']:
+            try:
+                targets = converter[chr][pos]
+                break
+            except IndexError:
+                continue
+        else:
+            print(
+                f'Liftover Warning: no mapping for hg38 {chrom}:{pos}', 
+                file=sys.stderr
+            )
             vcf.at[i, 'CHROM'] = 'Remove'
             continue
 
-        if lift_strand == '-':
+        # Only keep one-to-one mappings
+        if len(targets) > 1:
+            print(
+                f'Liftover Warning: multiple mappings for hg38 {chrom}:{pos} -> {targets}', 
+                file=sys.stderr
+            )
+            vcf.at[i, 'CHROM'] = 'Remove'
+            continue
+        elif len(targets) == 0:  # No mappings
+            vcf.at[i, 'CHROM'] = 'Remove'
+            continue
+        
+        target_chr, target_pos, target_strand = targets[0]
+
+        if target_strand == '+':
+            target_start = target_pos
+            target_end = target_pos + len(vcf_REF) - 1
+        elif target_strand == '-':
+            target_start = target_pos - len(vcf_REF) + 1
+            target_end = target_pos
             vcf_REF = reverse_complement(vcf_REF)
             vcf_ALT = reverse_complement(vcf_ALT)
+        else:
+            print(
+                f'Liftover Warning: invalid strand for hg38 {chrom}:{pos} -> hg19 {target_chr}:{target_pos} ({target_strand})', 
+                file=sys.stderr
+            )
+            vcf.at[i, 'CHROM'] = 'Remove'
+            continue
 
-            # https://github.com/jeremymcrae/liftover/issues/1#issuecomment-676597537
-            lift_pos += 2
+        ref_context = fasta[target_chr][target_start-2:target_end+1].seq.upper()  # uses 0-based
 
-        ref_context = fasta[lift_chr][lift_pos-2:lift_pos+1].seq.upper()
-
-        if (len(vcf_REF) == len(vcf_ALT) and vcf_REF != ref_context[1]):
+        if vcf_REF != ref_context[1:-1]:
             print((
-                f'Liftover Warning: ref mismatch at hg38 {chrom}:{pos} -> hg19 {lift_chr}:{lift_pos} '
-                f'-- VCF REF: {vcf_REF} (ALT: {vcf_ALT}) vs Reference hg19: {ref_context[1]} '
+                f'Liftover Warning: ref mismatch at hg38 {chrom}:{pos} -> hg19 {target_chr}:{target_start}-{target_end} '
+                f'-- VCF REF: {vcf_REF} (ALT: {vcf_ALT}) vs Reference hg19: {ref_context[1:-1]} '
                 f'-- Reference context: {ref_context}'
             ), file=sys.stderr)
             vcf.at[i, 'CHROM'] = 'Remove'
             continue
 
-        vcf.at[i, 'CHROM'] = lift_chr
-        vcf.at[i, 'POS'] = lift_pos
+        vcf.at[i, 'CHROM'] = target_chr
+        vcf.at[i, 'POS'] = target_start
         vcf.at[i, 'REF'] = vcf_REF
         vcf.at[i, 'ALT'] = vcf_ALT
 
@@ -151,7 +188,7 @@ def vcf2df(vcf_path:str, prefix:bool, liftOver:bool, fasta: Fasta) -> pd.DataFra
     vcf = process_tnp(vcf)
 
     # Filter SNVs in chr1-chr22
-    vcf_filter:pd.DataFrame = vcf[(vcf['is_snp'] == True) & (vcf['CHROM'].isin(chr_list)) & (vcf['REF'] != '-') & (vcf['ALT'] != '-')]
+    vcf_filter:pd.DataFrame = vcf[(vcf['is_snp'] == True) & (vcf['CHROM'].isin(chr_list)) & (vcf['REF'] != '-') & (vcf['ALT'] != '-') & (vcf['FILTER_PASS'] == True)]
 
     return(vcf_filter.reset_index(drop=True))
 
@@ -193,17 +230,48 @@ def df2mut(df:pd.DataFrame, sample_name:str, fasta:Fasta) -> pd.DataFrame:
     # Extract the mutation types
     changes:list = []
     for _,row in df.iterrows():
-        chrom:str = str(row['CHROM'])
-        pos:int = int(row['POS'])
-        ref:str = row['REF']
-        alt:str = row['ALT']
-        ref_ctx:str = fasta[chrom][pos-2:pos+1].seq.upper()
+        chrom = str(row['CHROM'])
+        pos = int(row['POS'])
+        ref = str(row['REF'])
+        alt = str(row['ALT'])
 
-        # Check that we have the same reference bases
-        if (ref != ref_ctx[1]):
+        # convert 1-based VCF POS to 0-based coordinate for pyfaidx
+        pos0 = pos - 1
+        start = pos0 - 1      # want one base upstream (0-based)
+        end = pos0 + 2        # end-exclusive: pos0 + 2 will include pos0 and pos0+1 (3 total bases)
+
+        # clamp start to 0 to avoid negative slice
+        start_clamped = max(0, start)
+
+        # Try fetching sequence, with a fallback to add/remove 'chr' if necessary
+        try:
+            ref_ctx = fasta[chrom][start_clamped:end].seq.upper()
+        except KeyError:
+            # try toggling 'chr' prefix
+            alt_chrom = ('chr' + chrom) if not chrom.startswith('chr') else chrom[3:]
+            try:
+                ref_ctx = fasta[alt_chrom][start_clamped:end].seq.upper()
+                chrom = alt_chrom  # use the fasta name going forward
+            except Exception as e:
+                print(f"Skipping {chrom}:{pos} — chromosome not in FASTA ({e})", file=sys.stderr)
+                continue
+        except Exception as e:
+            print(f"Skipping {chrom}:{pos} — error fetching FASTA slice: {e}", file=sys.stderr)
+            continue
+
+        # If returned context is too short, report and skip
+        if len(ref_ctx) < 3:
+            print(
+                f"Skipping {chrom}:{pos} — context too short (got {len(ref_ctx)} bp) "
+                f"requested start={start} end={end} (clamped_start={start_clamped})",
+                file=sys.stderr
+            )
+            continue
+
+        if ref != ref_ctx[1]:
             print(
                 '-----------------------------------\n'
-                "WARNING: Reference base from VCF file doesn't match with records on the provided reference genome\n"
+                "WARNING: Reference base from VCF file doesn't match reference genome\n"
                 f'{chrom}:{pos} -- VCF: {ref} vs Reference genome: {ref_ctx[1]} -- Reference context: {ref_ctx}\n'
                 '-----------------------------------',
                 file=sys.stderr
