@@ -13,6 +13,7 @@ RUN groupadd -r deeptumour && \
 
 # Copy requirements & pip install
 COPY --chmod=555 requirements $HOME/requirements
+COPY --chmod=555 requirements.txt $HOME/requirements/requirements.txt
 RUN pip install --no-cache-dir -r $HOME/requirements/requirements.txt
 
 # Copy DeepTumour code & model
