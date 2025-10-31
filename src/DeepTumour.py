@@ -153,6 +153,11 @@ class CompleteEnsemble(nn.Module):
               is_flag=True,
               required = False,
               help="Use this tag to print the results to stdout instead of saving them to a file")
+@click.option("--save-intermediate", "save_intermediate",
+              is_flag=True,
+              default=False,
+              help="Save intermediate VCF files after major processing steps")
+
 def DeepTumour(
     vcfFile: Optional[str],
     vcfDir: Optional[str],
@@ -161,6 +166,7 @@ def DeepTumour(
     keep_input: bool,
     outDir: str,
     stdout: bool,
+    save_intermediate: bool
 ):
 
     """
@@ -170,12 +176,12 @@ def DeepTumour(
     # Generate the DeepTumour input file from the VCFs
     input: pd.DataFrame
     if vcfFile and not vcfDir:
-        input = vcf2input(vcfFile, refGenome, hg38)
+        input = vcf2input(vcfFile, refGenome, hg38, save_intermediate, outDir)
     elif vcfDir and not vcfFile:
         input = pd.DataFrame()
         vcf_files: list = [file for file in os.listdir(vcfDir) if file.endswith('.vcf')]
         for file in tqdm(vcf_files, desc="Processing VCF files"):
-            input = pd.concat([input, vcf2input(os.path.join(vcfDir, file), refGenome, hg38)])
+            input = pd.concat([input, vcf2input(os.path.join(vcfDir, file), refGenome, hg38, save_intermediate, outDir)])
     else:
         raise ValueError('Please provide either a VCF file or a directory with VCF files')
 

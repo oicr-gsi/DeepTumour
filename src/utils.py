@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import gzip
 import re
 import pickle
 import sys
@@ -116,7 +117,27 @@ def process_tnp(vcf:pd.DataFrame) -> pd.DataFrame:
 
     return(new_vcf.reset_index(drop=True))
 
-def vcf2df(vcf_path:str, prefix:bool, liftOver:bool, fasta: Fasta) -> pd.DataFrame:
+def extract_vcf_headers(vcf_file):
+    """Extract VCF headers"""
+    headers = []
+    
+    # Check if file is gzipped
+    if vcf_file.endswith('.gz'):
+        open_func = gzip.open
+        mode = 'rt'  # text mode for gzip
+    else:
+        open_func = open
+        mode = 'r'
+    
+    with open_func(vcf_file, mode) as f:
+        for line in f:
+            if line.startswith('#'):
+                headers.append(line.rstrip())
+            else:
+                break  
+    return headers
+
+def vcf2df(vcf_path:str, prefix:bool, liftOver:bool, fasta: Fasta, save_intermediate:bool, outDir:str) -> pd.DataFrame:
 
     """
     Filter SNVs in chr1-chr22 from VCF file and return a dataframe
@@ -130,6 +151,22 @@ def vcf2df(vcf_path:str, prefix:bool, liftOver:bool, fasta: Fasta) -> pd.DataFra
     # LiftOver coordinates if the original VCF is in hg38
     if liftOver:
         vcf = hg38tohg19(vcf, fasta)
+    
+    # Save the vcf after liftover
+    if save_intermediate:
+        base_name = Path(base_name = Path(vcf_path).stem).stem
+        post_liftover_filename = f"{base_name}_post_liftover.vcf"
+        post_liftover_path = os.path.join(outDir, post_liftover_filename)
+        
+        # Extract headers from original file
+        headers = extract_vcf_headers(vcf_path)
+        
+        with open(post_liftover_path, 'w') as f:
+            for header in headers:
+                f.write(header + '\n')
+ 
+            vcf.to_csv(f, sep='\t', index=False, header=False)
+
 
     # Select chromosomes
     chr_list: list
@@ -242,7 +279,7 @@ def df2mut(df:pd.DataFrame, sample_name:str, fasta:Fasta) -> pd.DataFrame:
 
     return(mutations)
 
-def vcf2input(vcf:str, refGenome:str, liftOver:bool) -> pd.DataFrame:
+def vcf2input(vcf:str, refGenome:str, liftOver:bool,save_intermediate:bool, outDir:str) -> pd.DataFrame:
 
     """
     Process the VCF to get the input necessary for DeepTumour
@@ -256,7 +293,7 @@ def vcf2input(vcf:str, refGenome:str, liftOver:bool) -> pd.DataFrame:
     prefix:bool = list(fasta.keys())[0].startswith('chr')
 
     # Load the VCF
-    df:pd.DataFrame = vcf2df(vcf, prefix, liftOver, fasta)
+    df:pd.DataFrame = vcf2df(vcf, prefix, liftOver, fasta, save_intermediate, outDir)
 
     # Convert the dataframe to bin counts
     bins:pd.DataFrame = df2bins(df, sample_name, prefix)
